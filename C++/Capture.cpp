@@ -6,18 +6,18 @@ Capture::Capture(int index)
     : cameraIndex(index)
 {
 }
-
 bool Capture::start()
 {
     cap.open(cameraIndex);
-
+    
     
     if (!cap.isOpened())
     {
         std::cerr << "Could not open webcam!" << std::endl;
         return false;
     }
-
+    
+    bool ok = true;
     while (true)
     {
         cv::Mat frame;
@@ -26,6 +26,7 @@ bool Capture::start()
         if (!cap.read(frame))
         {
             std::cerr << "Failed to read frame!" << std::endl;
+            ok = false;
             break;
         }
 
@@ -43,5 +44,5 @@ bool Capture::start()
     cap.release();
     cv::destroyAllWindows();
 
-    return true;
+    return ok;
 }
