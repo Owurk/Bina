@@ -3,46 +3,41 @@
 #include <iostream>
 
 Capture::Capture(int index)
-    : cameraIndex(index)
+    : cameraIndex_(index)
 {
 }
-bool Capture::start()
+
+bool Capture::open()
 {
-    cap.open(cameraIndex);
-    
-    
-    if (!cap.isOpened())
+    if (isOpened())
+        return true;
+
+    cap_.open(cameraIndex_);
+    if (!cap_.isOpened())
     {
-        std::cerr << "Could not open webcam!" << std::endl;
+        std::cerr << "Could not open webcam!" << '\n';
         return false;
     }
-    
-    bool ok = true;
-    while (true)
+    return true;
+}
+
+bool Capture::read(cv::Mat& frame)
+{
+    if (!isOpened())
     {
-        cv::Mat frame;
-
-        
-        if (!cap.read(frame))
-        {
-            std::cerr << "Failed to read frame!" << std::endl;
-            ok = false;
-            break;
-        }
-
-        // Display the frame
-        cv::imshow("Webcam", frame);
-
-        // Exit when 'q' is pressed
-        if (cv::waitKey(1) == 'q')
-        {
-            break;
-        }
+        std::cerr << "Camera is not opened!" << '\n';
+        return false;
     }
+    return cap_.read(frame);
+}
 
+void Capture::release()
+{
+    if (isOpened())
+        cap_.release();
+}
 
-    cap.release();
-    cv::destroyAllWindows();
-
-    return ok;
+bool Capture::isOpened() const
+{
+    return cap_.isOpened();
 }

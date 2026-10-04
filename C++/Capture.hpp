@@ -1,15 +1,19 @@
 #pragma once
 
-#include <opencv2/opencv.hpp>
+#include <opencv2/core.hpp>
+#include <opencv2/videoio.hpp>
 
 class Capture
 {
-private:
-    cv::VideoCapture cap;
-    int cameraIndex;
-
 public:
     explicit Capture(int index = 0);
 
-    bool start();
+    bool open();
+    bool read(cv::Mat& frame);
+    void release();
+    bool isOpened() const;
+
+private:
+    cv::VideoCapture cap_;
+    int cameraIndex_;
 };
