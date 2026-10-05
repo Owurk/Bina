@@ -3,7 +3,7 @@
 #include <iostream>
 #include <opencv2/imgproc.hpp>
 
-MotionDetector::MotionDetector(MotionConfig cfg)
+MotionDetector::MotionDetector(const MotionConfig& cfg)
     :cfg_(cfg)
 {
 
@@ -18,6 +18,7 @@ bool MotionDetector::detect(const cv::Mat& frame)
 {
     if (frame.empty())
     {
+        motionStreak_=0;
         return false;
     }
 
@@ -33,6 +34,7 @@ bool MotionDetector::detect(const cv::Mat& frame)
     }
     else
     {
+        motionStreak_ = 0;
         return false;
     }
 
@@ -40,14 +42,15 @@ bool MotionDetector::detect(const cv::Mat& frame)
     
     if (prevGray_.empty())
     {
-        prevGray_ = currentGray;
+        prevGray_ = currentGray.clone();
         return false;
     }
 
     
     if (currentGray.size() != prevGray_.size())
     {
-        prevGray_ = currentGray;
+        motionStreak_ = 0;
+        prevGray_ = currentGray.clone();
         return false;
     }
 
@@ -86,7 +89,21 @@ bool MotionDetector::detect(const cv::Mat& frame)
 
     lastRatio_ = ratio;
 
-    prevGray_ = currentGray;
+    prevGray_ = currentGray.clone();
 
-    return ratio >= cfg_.minChangedRatio;
+    if(ratio >= cfg_.minChangedRatio)
+        ++motionStreak_;
+    else
+        motionStreak_=0;
+
+    return motionStreak_ >= cfg_.requiredConsecutiveFrames;
+}
+
+const MotionConfig& MotionDetector::getConfig() const
+{
+    return cfg_;
+}
+
+void MotionDetector::setConfig(const MotionConfig& cfg){
+    cfg_ = cfg;
 }
