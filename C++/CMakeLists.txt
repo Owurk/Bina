@@ -10,6 +10,7 @@ find_package(OpenCV REQUIRED)
 add_executable(bina
     main.cpp
     Capture.cpp
+    MotionDetector.cpp
 )
 
 target_include_directories(bina PRIVATE

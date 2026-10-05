@@ -1,7 +1,9 @@
 #include "Capture.hpp"
+#include "MotionDetector.hpp"
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <chrono>
 #include <iostream>
@@ -20,6 +22,9 @@ int main()
 
     int consecutiveFailures = 0;
     bool ok = true;
+
+    MotionConfig config;
+    MotionDetector detector(config);
 
     while (true)
     {
@@ -40,6 +45,23 @@ int main()
         }
 
         consecutiveFailures = 0;
+
+        bool motion = detector.detect(frame);
+
+        cv::Scalar textColor = motion
+            ? cv::Scalar(0, 0, 255)
+            : cv::Scalar(0, 255, 0);  
+            
+        std::string ratioText =
+        "Ratio: " + std::to_string(detector.getLastRatio());
+
+        std::string text = motion ? "Motion: TRUE" : "Motion: FALSE";
+
+        cv::putText(frame , text , cv::Point(20,40) , cv::FONT_HERSHEY_SIMPLEX , 1.0 , textColor ,2);
+        cv::putText(frame , ratioText , cv::Point(20,75) , cv::FONT_HERSHEY_SIMPLEX , 1.0 , textColor ,2); 
+        
+        std::string thresholdText = "Threshold: " + std::to_string(config.minChangedRatio);
+         cv::putText(frame , thresholdText , cv::Point(20,110) , cv::FONT_HERSHEY_SIMPLEX , 1.0 , textColor ,2); 
 
         cv::imshow(windowName, frame);
 
