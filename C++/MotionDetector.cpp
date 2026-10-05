@@ -65,6 +65,18 @@ bool MotionDetector::detect(const cv::Mat& frame)
         cv::THRESH_BINARY
     );
 
+    cv::Mat kernel = cv::getStructuringElement(
+        cv::MORPH_ELLIPSE ,
+        cv::Size(3,3)
+    );
+
+    cv::morphologyEx(
+    thresholded,
+    thresholded,
+    cv::MORPH_OPEN,
+    kernel
+    );
+
     int nonZero = cv::countNonZero(thresholded);
 
     int pixels = currentGray.rows * currentGray.cols;
