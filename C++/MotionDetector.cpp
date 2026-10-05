@@ -36,6 +36,7 @@ bool MotionDetector::detect(const cv::Mat& frame)
         return false;
     }
 
+    cv::GaussianBlur(currentGray , currentGray , cv::Size(5,5) , 0);
     
     if (prevGray_.empty())
     {
@@ -49,6 +50,8 @@ bool MotionDetector::detect(const cv::Mat& frame)
         prevGray_ = currentGray;
         return false;
     }
+
+    
 
     cv::Mat diff;
     cv::absdiff(currentGray, prevGray_, diff);

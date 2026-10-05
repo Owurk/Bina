@@ -10,7 +10,7 @@
 #include <string>
 #include <thread>
 
-int main()
+int main(int argc , char* argv[])
 {
     const std::string windowName = "Webcam";
     constexpr int kMaxConsecutiveFailures = 5;
@@ -24,6 +24,12 @@ int main()
     bool ok = true;
 
     MotionConfig config;
+
+    if(argc > 1 )
+        config.pixelThreshold = std::stoi(argv[1]);
+    if(argc > 2)
+        config.minChangedRatio = std::stod(argv[2]);
+
     MotionDetector detector(config);
 
     while (true)
