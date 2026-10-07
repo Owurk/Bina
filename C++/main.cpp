@@ -1,16 +1,19 @@
 #include "Capture.hpp"
+#include "MotionDetector.hpp"
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <chrono>
 #include <iostream>
 #include <string>
 #include <thread>
 
-int main()
+int main(int argc , char* argv[])
 {
     const std::string windowName = "Webcam";
+    cv::namedWindow(windowName);
     constexpr int kMaxConsecutiveFailures = 5;
     constexpr auto kRetryDelay = std::chrono::milliseconds(30);
 
@@ -20,6 +23,15 @@ int main()
 
     int consecutiveFailures = 0;
     bool ok = true;
+
+    MotionConfig config;
+
+    if(argc > 1 )
+        config.pixelThreshold = std::stoi(argv[1]);
+    if(argc > 2)
+        config.minChangedRatio = std::stod(argv[2]);
+
+    MotionDetector detector(config);
 
     while (true)
     {
@@ -41,10 +53,27 @@ int main()
 
         consecutiveFailures = 0;
 
+        bool motion = detector.detect(frame);
+
+        cv::Scalar textColor = motion
+            ? cv::Scalar(0, 0, 255)
+            : cv::Scalar(0, 255, 0);  
+            
+        std::string ratioText =
+          cv::format("Ratio: %.4f", detector.getLastRatio());
+
+        std::string text = motion ? "Motion: TRUE" : "Motion: FALSE";
+
+        cv::putText(frame , text , cv::Point(20,40) , cv::FONT_HERSHEY_SIMPLEX , 1.0 , textColor ,2);
+        cv::putText(frame , ratioText , cv::Point(20,75) , cv::FONT_HERSHEY_SIMPLEX , 1.0 , textColor ,2); 
+        
+        std::string thresholdText = cv::format("Threshold: %.4f", detector.getConfig().minChangedRatio);
+         cv::putText(frame , thresholdText , cv::Point(20,110) , cv::FONT_HERSHEY_SIMPLEX , 1.0 , textColor ,2); 
+
         cv::imshow(windowName, frame);
 
-        if (cv::waitKey(1) == 'q')
-            break;
+        if ((cv::waitKey(1) & 0xFF) == 'q')
+        break;
     }
 
     camera.release();
