@@ -26,7 +26,7 @@ bool MotionDetector::detect(const cv::Mat& frame)
 
     if (frame.channels() == 1)
     {
-        currentGray = frame;
+        currentGray = frame.clone();
     }
     else if (frame.channels() == 3)
     {
