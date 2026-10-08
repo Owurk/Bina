@@ -11,12 +11,13 @@ endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(OpenCV REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui videoio dnn)
 
 add_executable(bina
     main.cpp
     Capture.cpp
     MotionDetector.cpp
+    YoloDetector.cpp
 )
 
 target_include_directories(bina PRIVATE
@@ -25,6 +26,13 @@ target_include_directories(bina PRIVATE
 
 target_link_libraries(bina PRIVATE
     ${OpenCV_LIBS}
+)
+
+add_custom_command(TARGET bina POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/models
+        $<TARGET_FILE_DIR:bina>/models
+    COMMENT "Copying models next to executable"
 )
 
 if(MSVC)
