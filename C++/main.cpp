@@ -7,16 +7,19 @@
 #include <opencv2/imgproc.hpp>
 
 #include <chrono>
+#include <future>
 #include <iostream>
 #include <string>
 #include <thread>
+#include <vector>
 
-int main(int argc , char* argv[])
+int main(int argc, char* argv[])
 {
     const std::string windowName = "Webcam";
     cv::namedWindow(windowName);
     constexpr int kMaxConsecutiveFailures = 5;
     constexpr auto kRetryDelay = std::chrono::milliseconds(30);
+    constexpr int kYoloInterval = 1;
 
     Capture camera(0);
     if (!camera.open())
@@ -27,9 +30,9 @@ int main(int argc , char* argv[])
 
     MotionConfig motionConfig;
 
-    if(argc > 1 )
+    if (argc > 1)
         motionConfig.pixelThreshold = std::stoi(argv[1]);
-    if(argc > 2)
+    if (argc > 2)
         motionConfig.minChangedRatio = std::stod(argv[2]);
 
     MotionDetector motionDetector(motionConfig);
@@ -38,6 +41,10 @@ int main(int argc , char* argv[])
     YoloDetector yoloDetector(yoloConfig);
     if (!yoloDetector.load())
         return 1;
+
+    std::future<std::vector<Detection>> yoloFuture;
+    std::vector<Detection> latestDetections;
+    int frameCounter = 0;
 
     while (true)
     {
@@ -48,7 +55,7 @@ int main(int argc , char* argv[])
             if (++consecutiveFailures >= kMaxConsecutiveFailures)
             {
                 std::cerr << "Stream lost after " << consecutiveFailures
-                          << " consecutive failed reads." << '\n';
+                    << " consecutive failed reads." << '\n';
                 ok = false;
                 break;
             }
@@ -60,30 +67,50 @@ int main(int argc , char* argv[])
 
         bool motion = motionDetector.detect(frame);
 
-        if (motion)
+        if (motion && ++frameCounter >= kYoloInterval)
         {
-            std::vector<Detection> detections = yoloDetector.detect(frame);
+            frameCounter = 0;
 
-            for (const Detection& d : detections)
+            bool yoloIdle = !yoloFuture.valid() ||
+                yoloFuture.wait_for(std::chrono::milliseconds(0)) ==
+                std::future_status::ready;
+
+            if (yoloIdle)
             {
-                cv::rectangle(frame, d.box, cv::Scalar(0, 255, 0), 2);
+                if (yoloFuture.valid())
+                    latestDetections = yoloFuture.get();
 
-                std::string label = cv::format(
-                    "%s %.2f",
-                    d.className.c_str(),
-                    d.confidence
-                );
+                cv::Mat yoloFrame = frame.clone();
 
-                cv::putText(
-                    frame,
-                    label,
-                    cv::Point(d.box.x, d.box.y - 10),
-                    cv::FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    cv::Scalar(0, 255, 0),
-                    2
+                yoloFuture = std::async(
+                    std::launch::async,
+                    [&yoloDetector, yoloFrame]()
+                    {
+                        return yoloDetector.detect(yoloFrame);
+                    }
                 );
             }
+        }
+
+        for (const Detection& d : latestDetections)
+        {
+            cv::rectangle(frame, d.box, cv::Scalar(0, 255, 0), 2);
+
+            std::string label = cv::format(
+                "%s %.2f",
+                d.className.c_str(),
+                d.confidence
+            );
+
+            cv::putText(
+                frame,
+                label,
+                cv::Point(d.box.x, d.box.y - 10),
+                cv::FONT_HERSHEY_SIMPLEX,
+                0.6,
+                cv::Scalar(0, 255, 0),
+                2
+            );
         }
 
         cv::Scalar textColor = motion
@@ -95,17 +122,20 @@ int main(int argc , char* argv[])
 
         std::string text = motion ? "Motion: TRUE" : "Motion: FALSE";
 
-        cv::putText(frame , text , cv::Point(20,40) , cv::FONT_HERSHEY_SIMPLEX , 1.0 , textColor ,2);
-        cv::putText(frame , ratioText , cv::Point(20,75) , cv::FONT_HERSHEY_SIMPLEX , 1.0 , textColor ,2);
+        cv::putText(frame, text, cv::Point(20, 40), cv::FONT_HERSHEY_SIMPLEX, 1.0, textColor, 2);
+        cv::putText(frame, ratioText, cv::Point(20, 75), cv::FONT_HERSHEY_SIMPLEX, 1.0, textColor, 2);
 
         std::string thresholdText = cv::format("Threshold: %.4f", motionDetector.getConfig().minChangedRatio);
-        cv::putText(frame , thresholdText , cv::Point(20,110) , cv::FONT_HERSHEY_SIMPLEX , 1.0 , textColor ,2);
+        cv::putText(frame, thresholdText, cv::Point(20, 110), cv::FONT_HERSHEY_SIMPLEX, 1.0, textColor, 2);
 
         cv::imshow(windowName, frame);
 
         if ((cv::waitKey(1) & 0xFF) == 'q')
             break;
     }
+
+    if (yoloFuture.valid())
+        yoloFuture.wait();
 
     camera.release();
     cv::destroyWindow(windowName);
