@@ -89,7 +89,7 @@ int main(int argc, char* argv[])
     constexpr int kMaxConsecutiveFailures = 5;
     constexpr auto kRetryDelay = std::chrono::milliseconds(30);
 
-    Capture camera(1);
+    Capture camera(0);
     if (!camera.open())
         return 1;
 
