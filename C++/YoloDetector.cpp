@@ -131,6 +131,23 @@ std::vector<Detection> YoloDetector::postprocess(
     const cv::Size& originalSize
 ) const
 {
+    if (output.empty() || output.dims != 3)
+    {
+        std::cerr << "Unexpected YOLO output: dims="
+            << output.dims << '\n';
+        return {};
+    }
+
+    const int numClasses = static_cast<int>(classNames_.size());
+
+    if (output.size[1] != numClasses + 4)
+    {
+        std::cerr << "YOLO output size mismatch: got "
+            << output.size[1]
+            << ", expected " << (numClasses + 4) << '\n';
+        return {};
+    }
+
     cv::Mat out = output.reshape(1, output.size[1]);
 
     cv::Mat outT;
@@ -141,8 +158,6 @@ std::vector<Detection> YoloDetector::postprocess(
     std::vector<int> classIds;
 
     const int rows = outT.rows;
-    const int cols = outT.cols;
-    const int numClasses = cols - 4;
 
     const float sx = static_cast<float>(originalSize.width) / cfg_.inputWidth;
     const float sy = static_cast<float>(originalSize.height) / cfg_.inputHeight;
