@@ -84,21 +84,10 @@ namespace
 
 int main(int argc, char* argv[])
 {
-    const std::string windowName = "Webcam";
-    cv::namedWindow(windowName);
-    constexpr int kMaxConsecutiveFailures = 5;
-    constexpr auto kRetryDelay = std::chrono::milliseconds(30);
-
-    Capture camera(0);
-    if (!camera.open())
-        return 1;
-
-    int consecutiveFailures = 0;
-    bool ok = true;
-
     MotionConfig motionConfig;
     YoloConfig yoloConfig;
     int yoloInterval = 10;
+    int cameraIndex = 0;
 
     if (argc > 1)
     {
@@ -140,11 +129,44 @@ int main(int argc, char* argv[])
         }
     }
 
+    if (argc > 5)
+    {
+        if (!parseInt(argv[5], cameraIndex, 0, 10))
+        {
+            std::cerr << "Invalid cameraIndex (expected 0..10): "
+                << argv[5] << '\n';
+            return 1;
+        }
+    }
+
+    if (argc == 1)
+    {
+        std::cout << "Usage: bina [pixelThreshold] [minChangedRatio] "
+            << "[confidenceThreshold] [yoloInterval] [cameraIndex]\n"
+            << "  pixelThreshold     : 1..255  (default 25)\n"
+            << "  minChangedRatio    : 0..1    (default 0.002)\n"
+            << "  confidenceThreshold: 0..1    (default 0.5)\n"
+            << "  yoloInterval       : 1..1000 (default 10)\n"
+            << "  cameraIndex        : 0..10   (default 0)\n";
+    }
+
     MotionDetector motionDetector(motionConfig);
 
     YoloDetector yoloDetector(yoloConfig);
     if (!yoloDetector.load())
         return 1;
+
+    const std::string windowName = "Webcam";
+    cv::namedWindow(windowName);
+    constexpr int kMaxConsecutiveFailures = 5;
+    constexpr auto kRetryDelay = std::chrono::milliseconds(30);
+
+    Capture camera(cameraIndex);
+    if (!camera.open())
+        return 1;
+
+    int consecutiveFailures = 0;
+    bool ok = true;
 
     std::future<std::vector<Detection>> yoloFuture;
     std::vector<Detection> latestDetections;
@@ -268,6 +290,9 @@ int main(int argc, char* argv[])
 
         std::string confText = cv::format("Conf: %.2f", yoloDetector.getConfidenceThreshold());
         cv::putText(frame, confText, cv::Point(20, 145), cv::FONT_HERSHEY_SIMPLEX, 1.0, textColor, 2);
+
+        std::string camText = cv::format("Cam: %d", cameraIndex);
+        cv::putText(frame, camText, cv::Point(20, 180), cv::FONT_HERSHEY_SIMPLEX, 1.0, textColor, 2);
 
         cv::imshow(windowName, frame);
 
