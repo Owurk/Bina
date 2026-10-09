@@ -191,16 +191,27 @@ std::vector<Detection> YoloDetector::postprocess(
         keep
     );
 
+    const cv::Rect frameRect(0, 0, originalSize.width, originalSize.height);
+
     std::vector<Detection> result;
     result.reserve(keep.size());
 
     for (int idx : keep)
     {
+        if (classIds[idx] < 0 ||
+            classIds[idx] >= static_cast<int>(classNames_.size()))
+            continue;
+
+        cv::Rect box = boxes[idx] & frameRect;
+
+        if (box.width <= 0 || box.height <= 0)
+            continue;
+
         Detection d;
         d.classId = classIds[idx];
         d.className = classNames_[classIds[idx]];
         d.confidence = confidences[idx];
-        d.box = boxes[idx];
+        d.box = box;
         result.push_back(d);
     }
 
