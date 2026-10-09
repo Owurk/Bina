@@ -89,7 +89,7 @@ int main(int argc, char* argv[])
     constexpr int kMaxConsecutiveFailures = 5;
     constexpr auto kRetryDelay = std::chrono::milliseconds(30);
 
-    Capture camera(0);
+    Capture camera(1);
     if (!camera.open())
         return 1;
 
@@ -150,7 +150,7 @@ int main(int argc, char* argv[])
     std::vector<Detection> latestDetections;
     int frameCounter = 0;
     int framesSinceDetection = 0;
-    constexpr int kDetectionDisplayFrames = 15;
+    constexpr int kDetectionDisplayFrames = 90;
 
     while (true)
     {
