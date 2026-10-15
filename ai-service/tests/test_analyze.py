@@ -54,6 +54,54 @@ def test_valid_image_with_wrong_declared_mime_succeeds(client: TestClient, monke
     assert resp.status_code == 200
     assert resp.json() == {"description": "A red square."}
 
+def test_provider_no_choices_returns_502(client: TestClient, monkeypatch):
+    """Regression: empty choices must be a controlled 502, not IndexError/500."""
+
+    async def fake_create(*args, **kwargs):
+        return SimpleNamespace(choices=[])
+
+    _patch_client(monkeypatch, fake_create)
+
+    resp = client.post(
+        "/analyze",
+        files={"image": ("snap.png", _png_bytes(), "image/png")},
+    )
+    assert resp.status_code == 502
+
+
+def test_provider_none_content_returns_502(client: TestClient, monkeypatch):
+    """Regression: None content must not become HTTP 200 with empty description."""
+
+    async def fake_create(*args, **kwargs):
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=None))]
+        )
+
+    _patch_client(monkeypatch, fake_create)
+
+    resp = client.post(
+        "/analyze",
+        files={"image": ("snap.png", _png_bytes(), "image/png")},
+    )
+    assert resp.status_code == 502
+
+
+def test_provider_whitespace_content_returns_502(client: TestClient, monkeypatch):
+    """Regression: whitespace-only content must not report success."""
+
+    async def fake_create(*args, **kwargs):
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="   \n\t"))]
+        )
+
+    _patch_client(monkeypatch, fake_create)
+
+    resp = client.post(
+        "/analyze",
+        files={"image": ("snap.png", _png_bytes(), "image/png")},
+    )
+    assert resp.status_code == 502
+
 
 def test_provider_error_details_are_not_leaked(client: TestClient, monkeypatch):
     """Regression: internal provider details must never appear in the response."""

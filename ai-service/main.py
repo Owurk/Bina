@@ -162,5 +162,23 @@ async def analyze(
         logger.error("AI provider error: %s | body=%s", e, getattr(e, "body", None))
         raise HTTPException(status_code=502, detail="AI provider error.") from e
 
+    if not response.choices or response.choices[0].message is None:
+        logger.error("AI provider returned no usable choices.")
+        raise HTTPException(
+            status_code=502,
+            detail="AI provider returned no usable result.",
+        )
+
     description = (response.choices[0].message.content or "").strip()
+
+    if not description:
+        logger.error(
+            "AI provider returned an empty description (finish_reason=%s).",
+            getattr(response.choices[0], "finish_reason", "unknown"),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="AI provider returned no usable result.",
+        )
+
     return {"description": description}
