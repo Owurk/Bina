@@ -10,8 +10,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <ctime>
+#include <filesystem>
 #include <future>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -78,6 +82,98 @@ namespace
             return false;
 
         out = static_cast<int>(value);
+        return true;
+    }
+
+    bool isPersonOrAnimal(const std::string& className)
+    {
+        static const char* kTargetClasses[] = {
+            "person",
+            "bird", "cat", "dog", "horse", "sheep", "cow",
+            "elephant", "bear", "zebra", "giraffe"
+        };
+
+        for (const char* target : kTargetClasses)
+        {
+            if (className == target)
+                return true;
+        }
+        return false;
+    }
+
+    
+    std::string makeSnapshotTimestamp()
+    {
+        const std::time_t now = std::chrono::system_clock::to_time_t(
+            std::chrono::system_clock::now());
+
+        std::tm localTime{};
+#ifdef _WIN32
+        localtime_s(&localTime, &now);
+#else
+        localtime_r(&now, &localTime);
+#endif
+
+        std::ostringstream oss;
+        oss << std::put_time(&localTime, "%Y%m%d_%H%M%S");
+        return oss.str();
+    }
+
+    
+    std::string buildSnapshotPath(const std::string& dir)
+    {
+        const std::string timestamp = makeSnapshotTimestamp();
+        std::string path = dir + "/detect_" + timestamp + ".jpg";
+
+        
+        std::error_code ec;
+        for (int i = 1; std::filesystem::exists(path, ec); ++i)
+        {
+            path = dir + "/detect_" + timestamp + "_"
+                + std::to_string(i) + ".jpg";
+        }
+        return path;
+    }
+
+    
+    bool saveSnapshot(const std::string& dir,
+                      const cv::Mat& frame,
+                      const std::vector<Detection>& detections)
+    {
+        cv::Mat annotated = frame.clone();
+
+        for (const Detection& d : detections)
+        {
+            cv::rectangle(annotated, d.box, cv::Scalar(0, 255, 0), 2);
+
+            std::string label = cv::format(
+                "%s %.2f",
+                d.className.c_str(),
+                d.confidence
+            );
+
+            int baseline = 0;
+            const cv::Size textSize = cv::getTextSize(
+                label, cv::FONT_HERSHEY_SIMPLEX, 0.6, 2, &baseline);
+
+            cv::Point labelPos(d.box.x, d.box.y - 10);
+            if (labelPos.y < textSize.height) 
+                labelPos.y = d.box.y + d.box.height + textSize.height + 5;
+
+            cv::putText(annotated, label, labelPos,
+                cv::FONT_HERSHEY_SIMPLEX, 0.6,
+                cv::Scalar(0, 255, 0), 2);
+        }
+
+        const std::string path = buildSnapshotPath(dir);
+
+        if (!cv::imwrite(path, annotated))
+        {
+            std::cerr << "Failed to write snapshot: " << path << '\n';
+            return false;
+        }
+
+        std::cout << "Snapshot saved: " << path << '\n';
         return true;
     }
 }
@@ -150,6 +246,19 @@ int main(int argc, char* argv[])
             << "  cameraIndex        : 0..10   (default 0)\n";
     }
 
+    
+    const std::string snapshotDir = "snapshots";
+    {
+        std::error_code fsError;
+        std::filesystem::create_directories(snapshotDir, fsError);
+        if (fsError)
+        {
+            std::cerr << "Failed to create snapshots directory: "
+                << fsError.message() << '\n';
+            return 1;
+        }
+    }
+
     MotionDetector motionDetector(motionConfig);
 
     YoloDetector yoloDetector(yoloConfig);
@@ -173,6 +282,11 @@ int main(int argc, char* argv[])
     int frameCounter = 0;
     int framesSinceDetection = 0;
     constexpr int kDetectionDisplayFrames = 90;
+
+    
+    constexpr auto kSnapshotCooldown = std::chrono::seconds(5);
+    std::chrono::steady_clock::time_point lastSnapshotTime =
+        std::chrono::steady_clock::now() - kSnapshotCooldown;
 
     while (true)
     {
@@ -250,6 +364,25 @@ int main(int argc, char* argv[])
                         << e.what() << '\n';
                 }
             }
+        }
+
+        
+        bool personOrAnimalPresent = false;
+        for (const Detection& d : latestDetections)
+        {
+            if (isPersonOrAnimal(d.className))
+            {
+                personOrAnimalPresent = true;
+                break;
+            }
+        }
+
+        const auto currentTime = std::chrono::steady_clock::now();
+        if (motion && personOrAnimalPresent &&
+            currentTime - lastSnapshotTime >= kSnapshotCooldown)
+        {
+            lastSnapshotTime = currentTime;
+            saveSnapshot(snapshotDir, frame, latestDetections);
         }
 
         for (const Detection& d : latestDetections)
