@@ -139,3 +139,69 @@ def _patch_client(monkeypatch, create_impl):
         chat = _Chat()
 
     monkeypatch.setattr(main, "client", _StubClient())
+
+
+
+
+def _truncated_jpeg_bytes() -> bytes:
+    """
+    A JPEG whose header is intact but whose scan data is cut off at the
+    tail. It survives Image.open() + verify() (the old, weaker check) but
+    FAILS a full pixel decode (img.load()) — exactly the gap between
+    structural verification and real decoding.
+    """
+    buf = io.BytesIO()
+    Image.new("RGB", (256, 256), (30, 90, 200)).save(buf, format="JPEG")
+    full = buf.getvalue()
+    return full[:-16]
+
+
+def test_truncated_image_is_rejected(client: TestClient):
+    """
+    Regression: a structurally-valid but truncated JPEG (passes verify(),
+    fails a full pixel decode) must be rejected with 400 before it is ever
+    forwarded to the AI provider.
+    """
+    truncated = _truncated_jpeg_bytes()
+
+
+    with Image.open(io.BytesIO(truncated)) as img:
+        assert img.format == "JPEG"
+        img.verify()
+
+
+    resp = client.post(
+        "/analyze",
+        files={"image": ("snap.jpg", truncated, "image/jpeg")},
+    )
+    assert resp.status_code == 400
+    assert "decoded" in resp.json()["detail"]
+
+
+def test_oversized_upload_returns_413(client: TestClient):
+    """
+    Regression: an upload above MAX_IMAGE_BYTES must be rejected with 413.
+    The endpoint reads at most MAX_IMAGE_BYTES + 1 bytes, so an oversized
+    payload is never fully materialized in memory.
+    """
+    oversized = b"\x00" * (main.MAX_IMAGE_BYTES + 1024)  # 5 MB + 1 KB
+    resp = client.post(
+        "/analyze",
+        files={"image": ("snap.jpg", oversized, "image/jpeg")},
+    )
+    assert resp.status_code == 413
+
+
+def test_request_body_limit_rejects_before_parsing(client: TestClient):
+    """
+    Regression: bodies declaring a Content-Length above MAX_BODY_BYTES are
+    rejected with 413 by the middleware before multipart parsing starts
+    (chunked bodies without Content-Length are capped by the bounded read).
+    """
+    oversized = b"\x00" * (main.MAX_BODY_BYTES + 1024)
+    resp = client.post(
+        "/analyze",
+        files={"image": ("snap.jpg", oversized, "image/jpeg")},
+    )
+    assert resp.status_code == 413
+    assert resp.json()["detail"] == "Request body too large."

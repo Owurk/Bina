@@ -5,7 +5,8 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from openai import (
     APIConnectionError,
     APIError,
@@ -22,6 +23,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")  
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
+MAX_BODY_BYTES = MAX_IMAGE_BYTES + 64 * 1024
 REQUEST_TIMEOUT_SECONDS = 30.0
 
 logging.basicConfig(
@@ -51,6 +53,28 @@ print(
 app = FastAPI(title="Bina AI Service")
 
 
+
+@app.middleware("http")
+async def limit_request_body(request: Request, call_next):
+    """
+    Defense-in-depth for untrusted clients: reject request bodies that
+    declare a Content-Length above MAX_BODY_BYTES *before* multipart
+    parsing ever starts. Bodies without a Content-Length header (chunked
+    uploads) are still capped by the bounded read inside /analyze.
+    """
+    content_length = request.headers.get("content-length")
+    if (
+        content_length
+        and content_length.isdigit()
+        and int(content_length) > MAX_BODY_BYTES
+    ):
+        return JSONResponse(
+            status_code=413,
+            content={"detail": "Request body too large."},
+        )
+    return await call_next(request)
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
@@ -72,7 +96,9 @@ def _validated_content_type(data: bytes) -> str:
                     status_code=400,
                     detail="Only JPEG or PNG images are accepted.",
                 )
-            img.verify()
+            img.verify() 
+        with Image.open(io.BytesIO(data)) as img:
+            img.load()
     except UnidentifiedImageError:
         raise HTTPException(
             status_code=400,
@@ -99,7 +125,7 @@ async def analyze(
     is an architectural decision) and optionally the class detected by the
     C++ pipeline, and returns a short text description.
     """
-    data = await image.read()
+    data = await image.read(MAX_IMAGE_BYTES + 1)
     if not data:
         raise HTTPException(status_code=400, detail="Empty image file.")
     if len(data) > MAX_IMAGE_BYTES:
