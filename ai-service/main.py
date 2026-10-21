@@ -5,8 +5,10 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
+from starlette.datastructures import Headers
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from openai import (
     APIConnectionError,
     APIError,
@@ -24,6 +26,7 @@ OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
 MAX_BODY_BYTES = MAX_IMAGE_BYTES + 64 * 1024
+MAX_IMAGE_PIXELS = 16_000_000
 REQUEST_TIMEOUT_SECONDS = 30.0
 
 logging.basicConfig(
@@ -50,29 +53,81 @@ print(
     f" | model: {OPENAI_MODEL}"
 )
 
-app = FastAPI(title="Bina AI Service")
 
-
-
-@app.middleware("http")
-async def limit_request_body(request: Request, call_next):
+class BodyLimitMiddleware:
     """
-    Defense-in-depth for untrusted clients: reject request bodies that
-    declare a Content-Length above MAX_BODY_BYTES *before* multipart
-    parsing ever starts. Bodies without a Content-Length header (chunked
-    uploads) are still capped by the bounded read inside /analyze.
+    Pure-ASGI middleware enforcing MAX_BODY_BYTES on the request body while
+    the ASGI stream is consumed — independent of the Content-Length header,
+    which may be absent (chunked uploads) or simply lie.
+
+    Three layers:
+      1. Fast-fail: a declared Content-Length above the cap is rejected
+         with 413 before a single byte is read.
+      2. Streaming cap: body bytes are counted as they flow through the
+         ASGI receive channel; once the cap is exceeded, the stream is cut
+         off, so the multipart parser never spools the rest of the body.
+      3. Clean rejection: the error response the app produces for the
+         cut-off stream (a 400 from the aborted multipart parse) is
+         suppressed and replaced with a 413 — the endpoint never runs.
     """
-    content_length = request.headers.get("content-length")
-    if (
-        content_length
-        and content_length.isdigit()
-        and int(content_length) > MAX_BODY_BYTES
-    ):
-        return JSONResponse(
+
+    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+      
+        declared = Headers(scope=scope).get("content-length")
+        if declared and declared.isdigit() and int(declared) > self.max_bytes:
+            await self._reject(scope, receive, send)
+            return
+
+       
+        received = 0
+        exceeded = False
+        eof = {"type": "http.request", "body": b"", "more_body": False}
+
+        async def counting_receive() -> Message:
+            nonlocal received, exceeded
+            if exceeded:
+                return eof  
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    exceeded = True
+                    return eof  
+            return message
+
+        async def guarded_send(message: Message) -> None:
+            if exceeded:
+                return  
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, guarded_send)
+        except Exception:
+         
+            if not exceeded:
+                raise
+
+        if exceeded:
+            await self._reject(scope, receive, send)
+
+    async def _reject(self, scope: Scope, receive: Receive, send: Send) -> None:
+        response = JSONResponse(
             status_code=413,
             content={"detail": "Request body too large."},
         )
-    return await call_next(request)
+        await response(scope, receive, send)
+
+
+app = FastAPI(title="Bina AI Service")
+app.add_middleware(BodyLimitMiddleware, max_bytes=MAX_BODY_BYTES)
 
 
 @app.get("/health")
@@ -82,11 +137,17 @@ async def health() -> dict:
 
 def _validated_content_type(data: bytes) -> str:
     """
-    Decode the upload with Pillow and verify it is a real JPEG or PNG.
-
     The client-provided Content-Type is never trusted (it can be forged),
-    so this is the authoritative image check. Returns the canonical
-    content type used for the provider request.
+    so this is the authoritative image check.
+
+    Decompression-bomb protection — two independent caps:
+      - MAX_IMAGE_BYTES bounds the compressed wire payload (enforced by the
+        caller before this function runs);
+      - MAX_IMAGE_PIXELS bounds the decoded raster. It is checked straight
+        from the image headers, before img.load() runs, so an image with
+        absurd dimensions never gets its pixels allocated at all.
+
+    Returns the canonical content type used for the provider request.
     """
     try:
         with Image.open(io.BytesIO(data)) as img:
@@ -96,7 +157,14 @@ def _validated_content_type(data: bytes) -> str:
                     status_code=400,
                     detail="Only JPEG or PNG images are accepted.",
                 )
+
+            if img.width * img.height > MAX_IMAGE_PIXELS:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Image too large (max {MAX_IMAGE_PIXELS // 1_000_000} MP).",
+                )
             img.verify() 
+            
         with Image.open(io.BytesIO(data)) as img:
             img.load()
     except UnidentifiedImageError:

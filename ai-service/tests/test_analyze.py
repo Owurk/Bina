@@ -205,3 +205,55 @@ def test_request_body_limit_rejects_before_parsing(client: TestClient):
     )
     assert resp.status_code == 413
     assert resp.json()["detail"] == "Request body too large."
+
+
+
+
+
+def test_oversized_chunked_upload_without_content_length_returns_413(client: TestClient):
+    """
+    Regression: an oversized multipart body streamed WITHOUT a Content-Length
+    header (chunked transfer) must be cut off by the ASGI streaming body
+    limit while the stream is consumed — 413 before multipart parsing
+    completes, independent of the (absent) Content-Length header.
+    """
+    boundary = "----bina-test-boundary"
+    part = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="image"; filename="big.jpg"\r\n'
+        "Content-Type: image/jpeg\r\n"
+        "\r\n"
+    ).encode() + b"\x00" * (main.MAX_BODY_BYTES + 1024) + (
+        f"\r\n--{boundary}--\r\n"
+    ).encode()
+
+    resp = client.post(
+        "/analyze",
+        content=iter([part]),
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+    )
+
+    # Precondition: the request genuinely has no Content-Length header
+    # (chunked transfer), so only the streaming layer can catch it.
+    assert "content-length" not in resp.request.headers
+    assert resp.status_code == 413
+    assert resp.json()["detail"] == "Request body too large."
+
+
+def test_oversized_image_dimensions_rejected(client: TestClient):
+    """
+    Regression: decompression-bomb guard — an image whose header declares
+    more than MAX_IMAGE_PIXELS is rejected with 413 straight from the
+    header, before any pixel is decoded (the file itself is tiny on disk).
+    """
+    buf = io.BytesIO()
+    Image.new("L", (6000, 4000)).save(buf, format="PNG")  # 24 MP, few KB on disk
+    big_dims = buf.getvalue()
+    assert len(big_dims) < main.MAX_IMAGE_BYTES  # passes the compressed-size cap
+
+    resp = client.post(
+        "/analyze",
+        files={"image": ("snap.png", big_dims, "image/png")},
+    )
+    assert resp.status_code == 413
+    assert "16 MP" in resp.json()["detail"]
