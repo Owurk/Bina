@@ -4,9 +4,6 @@ project(Bina)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(OpenCV_DIR
-    "C:/Users/User/Downloads/opencv-5.x/opencv-5.x/build-mingw/install"
-)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
