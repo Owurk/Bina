@@ -19,6 +19,7 @@ add_executable(bina
     Capture.cpp
     MotionDetector.cpp
     YoloDetector.cpp
+    VideoRecoreder.cpp
 )
 
 target_include_directories(bina PRIVATE
