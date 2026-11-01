@@ -261,7 +261,7 @@ int main(int argc, char* argv[])
     }
 
     MotionDetector motionDetector(motionConfig);
-    VideoRecorder videoRecorder;
+    
 
     YoloDetector yoloDetector(yoloConfig);
     if (!yoloDetector.load())
@@ -275,6 +275,9 @@ int main(int argc, char* argv[])
     Capture camera(cameraIndex);
     if (!camera.open())
         return 1;
+
+    double cameraFPS = camera.getFPS();
+    VideoRecorder videoRecorder(cameraFPS);
 
     int consecutiveFailures = 0;
     bool ok = true;
@@ -454,6 +457,8 @@ int main(int argc, char* argv[])
                 << e.what() << '\n';
         }
     }
+
+    videoRecorder.stopRecording();
 
     camera.release();
     cv::destroyWindow(windowName);

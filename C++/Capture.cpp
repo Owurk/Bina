@@ -41,3 +41,12 @@ bool Capture::isOpened() const
 {
     return cap_.isOpened();
 }
+
+double Capture::getFPS() const
+{
+    if(!isOpened()){
+        return 0.0;
+    }
+
+    return cap_.get(cv::CAP_PROP_FPS);
+}

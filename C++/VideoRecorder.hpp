@@ -23,8 +23,11 @@ private:
     std::chrono::steady_clock::time_point detectionTime_;
     std::vector<cv::Mat> recordingFrames_;
     std::string detectedType_;
+    double fps_;
 public:
+    explicit VideoRecorder(double fps = 20.0);
     void addFrame(const cv::Mat&);
     void startRecording(const std::string& );
     void saveRecording();
+    void stopRecording();
 };
