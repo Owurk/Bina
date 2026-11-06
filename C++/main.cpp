@@ -1,6 +1,7 @@
 #include "Capture.hpp"
 #include "MotionDetector.hpp"
 #include "YoloDetector.hpp"
+#include "VideoRecorder.hpp"
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -260,6 +261,7 @@ int main(int argc, char* argv[])
     }
 
     MotionDetector motionDetector(motionConfig);
+    
 
     YoloDetector yoloDetector(yoloConfig);
     if (!yoloDetector.load())
@@ -273,6 +275,9 @@ int main(int argc, char* argv[])
     Capture camera(cameraIndex);
     if (!camera.open())
         return 1;
+
+    double cameraFPS = camera.getFPS();
+    VideoRecorder videoRecorder(cameraFPS);
 
     int consecutiveFailures = 0;
     bool ok = true;
@@ -306,6 +311,7 @@ int main(int argc, char* argv[])
         }
 
         consecutiveFailures = 0;
+        videoRecorder.addFrame(frame);
 
         if (yoloFuture.valid() &&
             yoloFuture.wait_for(std::chrono::milliseconds(0)) ==
@@ -368,22 +374,28 @@ int main(int argc, char* argv[])
 
         
         bool personOrAnimalPresent = false;
+        std::string detectedType;
         for (const Detection& d : latestDetections)
         {
             if (isPersonOrAnimal(d.className))
             {
                 personOrAnimalPresent = true;
+                detectedType = d.className;
                 break;
             }
         }
 
         const auto currentTime = std::chrono::steady_clock::now();
-        if (motion && personOrAnimalPresent &&
-            currentTime - lastSnapshotTime >= kSnapshotCooldown)
-        {
-            lastSnapshotTime = currentTime;
-            saveSnapshot(snapshotDir, frame, latestDetections);
-        }
+        if (motion && personOrAnimalPresent)
+{
+    videoRecorder.startRecording(detectedType);
+
+    if (currentTime - lastSnapshotTime >= kSnapshotCooldown)
+    {
+        lastSnapshotTime = currentTime;
+        saveSnapshot(snapshotDir, frame, latestDetections);
+    }
+}
 
         for (const Detection& d : latestDetections)
         {
@@ -445,6 +457,8 @@ int main(int argc, char* argv[])
                 << e.what() << '\n';
         }
     }
+
+    videoRecorder.stopRecording();
 
     camera.release();
     cv::destroyWindow(windowName);

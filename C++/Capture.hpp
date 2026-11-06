@@ -12,6 +12,7 @@ public:
     bool read(cv::Mat& frame);
     void release();
     bool isOpened() const;
+    double getFPS() const;
 
 private:
     cv::VideoCapture cap_;
