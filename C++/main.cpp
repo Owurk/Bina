@@ -2,6 +2,7 @@
 #include "MotionDetector.hpp"
 #include "YoloDetector.hpp"
 #include "VideoRecorder.hpp"
+#include "Event.hpp"
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -13,6 +14,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <iomanip>
 #include <iostream>
@@ -102,7 +104,7 @@ namespace
         return false;
     }
 
-    
+
     std::string makeSnapshotTimestamp()
     {
         const std::time_t now = std::chrono::system_clock::to_time_t(
@@ -120,13 +122,13 @@ namespace
         return oss.str();
     }
 
-    
+
     std::string buildSnapshotPath(const std::string& dir)
     {
         const std::string timestamp = makeSnapshotTimestamp();
         std::string path = dir + "/detect_" + timestamp + ".jpg";
 
-        
+
         std::error_code ec;
         for (int i = 1; std::filesystem::exists(path, ec); ++i)
         {
@@ -136,10 +138,10 @@ namespace
         return path;
     }
 
-    
-    bool saveSnapshot(const std::string& dir,
-                      const cv::Mat& frame,
-                      const std::vector<Detection>& detections)
+
+    std::string saveSnapshot(const std::string& dir,
+        const cv::Mat& frame,
+        const std::vector<Detection>& detections)
     {
         cv::Mat annotated = frame.clone();
 
@@ -158,7 +160,7 @@ namespace
                 label, cv::FONT_HERSHEY_SIMPLEX, 0.6, 2, &baseline);
 
             cv::Point labelPos(d.box.x, d.box.y - 10);
-            if (labelPos.y < textSize.height) 
+            if (labelPos.y < textSize.height)
                 labelPos.y = d.box.y + d.box.height + textSize.height + 5;
 
             cv::putText(annotated, label, labelPos,
@@ -171,11 +173,11 @@ namespace
         if (!cv::imwrite(path, annotated))
         {
             std::cerr << "Failed to write snapshot: " << path << '\n';
-            return false;
+            return "";
         }
 
         std::cout << "Snapshot saved: " << path << '\n';
-        return true;
+        return path;
     }
 }
 
@@ -247,7 +249,7 @@ int main(int argc, char* argv[])
             << "  cameraIndex        : 0..10   (default 0)\n";
     }
 
-    
+
     const std::string snapshotDir = "snapshots";
     {
         std::error_code fsError;
@@ -261,11 +263,37 @@ int main(int argc, char* argv[])
     }
 
     MotionDetector motionDetector(motionConfig);
-    
+
 
     YoloDetector yoloDetector(yoloConfig);
     if (!yoloDetector.load())
         return 1;
+
+    std::vector<Event> events;
+
+    std::string pendingSnapshotPath;
+    std::string pendingDetectedClass;
+
+    auto createEventIfReady = [&](const std::string& clipPath)
+        {
+            if (!pendingSnapshotPath.empty() && !clipPath.empty())
+            {
+                Event event(
+                    pendingSnapshotPath,
+                    clipPath,
+                    pendingDetectedClass,
+                    "Person or animal detected"
+                );
+
+                events.push_back(event);
+
+                std::cout << "Event created: "
+                    << event.getId() << '\n';
+
+                pendingSnapshotPath.clear();
+                pendingDetectedClass.clear();
+            }
+        };
 
     const std::string windowName = "Webcam";
     cv::namedWindow(windowName);
@@ -288,7 +316,7 @@ int main(int argc, char* argv[])
     int framesSinceDetection = 0;
     constexpr int kDetectionDisplayFrames = 90;
 
-    
+
     constexpr auto kSnapshotCooldown = std::chrono::seconds(5);
     std::chrono::steady_clock::time_point lastSnapshotTime =
         std::chrono::steady_clock::now() - kSnapshotCooldown;
@@ -312,6 +340,10 @@ int main(int argc, char* argv[])
 
         consecutiveFailures = 0;
         videoRecorder.addFrame(frame);
+
+        const std::string completedClipPath =
+            videoRecorder.getCompletedRecordingPath();
+        createEventIfReady(completedClipPath);
 
         if (yoloFuture.valid() &&
             yoloFuture.wait_for(std::chrono::milliseconds(0)) ==
@@ -372,7 +404,7 @@ int main(int argc, char* argv[])
             }
         }
 
-        
+
         bool personOrAnimalPresent = false;
         std::string detectedType;
         for (const Detection& d : latestDetections)
@@ -387,15 +419,21 @@ int main(int argc, char* argv[])
 
         const auto currentTime = std::chrono::steady_clock::now();
         if (motion && personOrAnimalPresent)
-{
-    videoRecorder.startRecording(detectedType);
+        {
+            videoRecorder.startRecording(detectedType);
 
-    if (currentTime - lastSnapshotTime >= kSnapshotCooldown)
-    {
-        lastSnapshotTime = currentTime;
-        saveSnapshot(snapshotDir, frame, latestDetections);
-    }
-}
+            if (currentTime - lastSnapshotTime >= kSnapshotCooldown &&
+                pendingSnapshotPath.empty())
+            {
+                lastSnapshotTime = currentTime;
+                pendingSnapshotPath = saveSnapshot(
+                    snapshotDir, frame, latestDetections
+                );
+
+                if (!pendingSnapshotPath.empty())
+                    pendingDetectedClass = detectedType;
+            }
+        }
 
         for (const Detection& d : latestDetections)
         {
@@ -459,6 +497,35 @@ int main(int argc, char* argv[])
     }
 
     videoRecorder.stopRecording();
+
+    const std::string finalClipPath =
+        videoRecorder.getCompletedRecordingPath();
+    createEventIfReady(finalClipPath);
+
+    std::ofstream eventsFile("events.json");
+    if (eventsFile.is_open())
+    {
+        eventsFile << "[\n";
+
+        for (std::size_t i = 0; i < events.size(); ++i)
+        {
+            eventsFile << events[i].toJson();
+
+            if (i + 1 < events.size())
+                eventsFile << ",";
+
+            eventsFile << "\n";
+        }
+
+        eventsFile << "]\n";
+        eventsFile.close();
+
+        std::cout << "Events saved to events.json\n";
+    }
+    else
+    {
+        std::cerr << "Failed to create events.json\n";
+    }
 
     camera.release();
     cv::destroyWindow(windowName);

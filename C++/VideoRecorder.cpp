@@ -101,6 +101,8 @@ void VideoRecorder::saveRecording()
     std::string filename = detectedType_ + "_" + timestamp + ".avi";
     std::string outputPath = "videoshot/" + filename;
 
+    completedRecordingPath_.clear();
+
     for (int i = 1; ; ++i)
     {
     const bool exists = std::filesystem::exists(outputPath, ec);
@@ -159,6 +161,8 @@ void VideoRecorder::saveRecording()
 
     writer.release();
 
+    completedRecordingPath_ = outputPath;
+
     std::cout << "Video saved: " << outputPath << '\n';
     std::cout << "Total frames: "
               << recordingFrames_.size() << '\n';
@@ -173,4 +177,11 @@ void VideoRecorder::stopRecording()
 
     isRecording_ = false;
     saveRecording();
+}
+
+std::string VideoRecorder::getCompletedRecordingPath()
+{
+    std::string path = completedRecordingPath_;
+    completedRecordingPath_.clear();
+    return path;
 }
