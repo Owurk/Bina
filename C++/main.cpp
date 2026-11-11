@@ -179,6 +179,16 @@ namespace
         std::cout << "Snapshot saved: " << path << '\n';
         return path;
     }
+
+
+    std::string makeMediaRef(const std::string& kind, const std::string& path)
+    {
+        if (path.empty())
+            return "";
+
+        return "media://" + kind + "/" +
+            std::filesystem::path(path).filename().string();
+    }
 }
 
 int main(int argc, char* argv[])
@@ -279,8 +289,8 @@ int main(int argc, char* argv[])
             if (!pendingSnapshotPath.empty() && !clipPath.empty())
             {
                 Event event(
-                    pendingSnapshotPath,
-                    clipPath,
+                    makeMediaRef("snapshots", pendingSnapshotPath),
+                    makeMediaRef("videos", clipPath),
                     pendingDetectedClass,
                     "Person or animal detected"
                 );
