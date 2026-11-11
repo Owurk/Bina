@@ -24,10 +24,13 @@ private:
     std::vector<cv::Mat> recordingFrames_;
     std::string detectedType_;
     double fps_;
+    std::string completedRecordingPath_;
+
 public:
     explicit VideoRecorder(double fps = 20.0);
     void addFrame(const cv::Mat&);
     void startRecording(const std::string& );
     void saveRecording();
     void stopRecording();
+    std::string getCompletedRecordingPath();
 };

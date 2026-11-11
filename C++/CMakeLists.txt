@@ -20,6 +20,7 @@ add_executable(bina
     MotionDetector.cpp
     YoloDetector.cpp
     VideoRecorder.cpp
+    Event.cpp
 )
 
 target_include_directories(bina PRIVATE
