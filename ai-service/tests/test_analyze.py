@@ -21,17 +21,31 @@ def _png_bytes() -> bytes:
     return buf.getvalue()
 
 
-def _json_content(title: str, description: str, severity: str) -> str:
+def _json_content(
+    title: str,
+    description: str,
+    severity: str,
+    is_unusual: bool = False,
+    reason: str = "",
+) -> str:
     import json
 
-    return json.dumps({"title": title, "description": description, "severity": severity})
+    return json.dumps(
+        {
+            "title": title,
+            "description": description,
+            "severity": severity,
+            "is_unusual": is_unusual,
+            "reason": reason,
+        }
+    )
 
 
 
 
 
-def test_structured_json_is_returned_as_three_fields(client, monkeypatch):
-    """Happy path: a well-formed JSON model reply becomes the three fields."""
+def test_structured_json_is_returned_as_five_fields(client, monkeypatch):
+    """Happy path: a well-formed JSON model reply becomes the five fields."""
 
     async def fake_create(*args, **kwargs):
         return SimpleNamespace(
@@ -58,6 +72,8 @@ def test_structured_json_is_returned_as_three_fields(client, monkeypatch):
         "title": "Person at the front door",
         "description": "A person is standing at the front door, facing the entrance.",
         "severity": "medium",
+        "is_unusual": False,
+        "reason": "",
     }
 
 
@@ -114,6 +130,8 @@ def test_json_wrapped_in_fences_or_prose_still_parses(client, monkeypatch):
         "title": "Cat on the porch",
         "description": "A cat is sitting on the porch railing.",
         "severity": "low",
+        "is_unusual": False,
+        "reason": "",
     }
 
 
@@ -193,6 +211,162 @@ def test_overlong_title_is_clamped_to_ten_words(client, monkeypatch):
     assert resp.json()["title"] == "one two three four five six seven eight nine ten"
 
 
+def test_unusual_event_returns_true_flag_with_reason(client, monkeypatch):
+    """BIN-010: an unusual event carries is_unusual=True plus a short reason."""
+
+    async def fake_create(*args, **kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=_json_content(
+                            "Person forcing the back window",
+                            "A person is prying open the back window with a tool.",
+                            "high",
+                            is_unusual=True,
+                            reason="Someone is prying open a window with a tool.",
+                        )
+                    )
+                )
+            ]
+        )
+
+    _patch_client(monkeypatch, fake_create)
+    resp = client.post(
+        "/analyze",
+        files={"image": ("snap.png", _png_bytes(), "image/png")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_unusual"] is True
+    assert isinstance(body["is_unusual"], bool)
+    assert body["reason"] == "Someone is prying open a window with a tool."
+
+
+def test_normal_event_returns_false_flag_and_no_reason(client, monkeypatch):
+    """BIN-010 tuning: a normal everyday detection is not flagged, and a
+    reason volunteered alongside is_unusual=false is dropped so consumers
+    never see a reason without the flag."""
+
+    async def fake_create(*args, **kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=_json_content(
+                            "Person walking past",
+                            "A person is walking along the sidewalk past the house.",
+                            "low",
+                            is_unusual=False,
+                            reason="Ordinary passers-by.",
+                        )
+                    )
+                )
+            ]
+        )
+
+    _patch_client(monkeypatch, fake_create)
+    resp = client.post(
+        "/analyze",
+        files={"image": ("snap.png", _png_bytes(), "image/png")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_unusual"] is False
+    assert body["reason"] == ""
+
+
+def test_string_boolean_is_normalized(client, monkeypatch):
+    """Models drift into "true"/"false" strings; the flag must stay boolean."""
+
+    async def fake_create(*args, **kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=(
+                            '{"title": "Person climbing the fence", '
+                            '"description": "A person is climbing over the back fence.", '
+                            '"severity": "high", "is_unusual": "true", '
+                            '"reason": "Climbing a fence is out of the ordinary."}'
+                        )
+                    )
+                )
+            ]
+        )
+
+    _patch_client(monkeypatch, fake_create)
+    resp = client.post(
+        "/analyze",
+        files={"image": ("snap.png", _png_bytes(), "image/png")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_unusual"] is True
+    assert isinstance(body["is_unusual"], bool)
+    assert body["reason"] == "Climbing a fence is out of the ordinary."
+
+
+def test_missing_is_unusual_defaults_to_false(client, monkeypatch):
+    """A model reply without the new keys must not flag the event."""
+
+    async def fake_create(*args, **kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=(
+                            '{"title": "Cat on the porch", '
+                            '"description": "A cat is sitting on the porch railing.", '
+                            '"severity": "low"}'
+                        )
+                    )
+                )
+            ]
+        )
+
+    _patch_client(monkeypatch, fake_create)
+    resp = client.post(
+        "/analyze",
+        files={"image": ("snap.png", _png_bytes(), "image/png")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_unusual"] is False
+    assert body["reason"] == ""
+
+
+def test_overlong_reason_is_clamped(client, monkeypatch):
+    """The reason cap is enforced in code, not just in the prompt."""
+
+    long_reason = " ".join(f"word{i}" for i in range(30))
+
+    async def fake_create(*args, **kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=_json_content(
+                            "Person forcing the door",
+                            "A person is forcing the front door open.",
+                            "high",
+                            is_unusual=True,
+                            reason=long_reason,
+                        )
+                    )
+                )
+            ]
+        )
+
+    _patch_client(monkeypatch, fake_create)
+    resp = client.post(
+        "/analyze",
+        files={"image": ("snap.png", _png_bytes(), "image/png")},
+    )
+    assert resp.status_code == 200
+    assert len(resp.json()["reason"].split()) == main.MAX_UNUSUAL_REASON_WORDS
+
+
 
 
 
@@ -220,7 +394,7 @@ def test_non_json_output_falls_back_to_plain_text(client, monkeypatch):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body) == {"title", "description", "severity"}
+    assert set(body) == {"title", "description", "severity", "is_unusual", "reason"}
     assert (
         body["description"]
         == "A person is walking across the backyard carrying a ladder towards the shed."
@@ -228,6 +402,9 @@ def test_non_json_output_falls_back_to_plain_text(client, monkeypatch):
     # Title = first MAX_TITLE_WORDS words of the description.
     assert body["title"] == "A person is walking across the backyard carrying a ladder"
     assert body["severity"] == "medium"
+    # Plain text cannot carry the AI signal — it defaults to "ordinary".
+    assert body["is_unusual"] is False
+    assert body["reason"] == ""
 
 
 def test_truncated_json_falls_back_to_plain_text(client, monkeypatch):
@@ -251,9 +428,11 @@ def test_truncated_json_falls_back_to_plain_text(client, monkeypatch):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body) == {"title", "description", "severity"}
+    assert set(body) == {"title", "description", "severity", "is_unusual", "reason"}
     assert body["description"].startswith('{"title": "Person at door"')
     assert body["severity"] == "medium"
+    assert body["is_unusual"] is False
+    assert body["reason"] == ""
 
 
 def test_prompt_asks_for_json_and_includes_detected_class(client, monkeypatch):
@@ -287,6 +466,12 @@ def test_prompt_asks_for_json_and_includes_detected_class(client, monkeypatch):
     assert '"description"' in system_prompt
     assert '"severity"' in system_prompt
     assert "low" in system_prompt and "medium" in system_prompt and "high" in system_prompt
+    # BIN-010: the prompt must request the unusual-event flag and tune the
+    # model towards False on ordinary everyday detections.
+    assert '"is_unusual"' in system_prompt
+    assert '"reason"' in system_prompt
+    assert "must have is_unusual false" in system_prompt
+    assert "when in doubt, answer false" in system_prompt
     assert "person" in user_text
     assert captured["max_tokens"] == main.ANALYSIS_MAX_TOKENS
 
@@ -334,6 +519,8 @@ def test_valid_image_with_wrong_declared_mime_succeeds(client: TestClient, monke
         "title": "Red square",
         "description": "A solid red square.",
         "severity": "low",
+        "is_unusual": False,
+        "reason": "",
     }
 
 
