@@ -1,13 +1,29 @@
+import json
+
 import pytest
 
 from main import (
+    FALLBACK_IS_UNUSUAL,
     FALLBACK_SEVERITY,
     MAX_TITLE_WORDS,
+    MAX_UNUSUAL_REASON_WORDS,
     SEVERITY_LEVELS,
     _clamped_title,
+    _clamped_words,
     _extract_json_object,
     _parse_ai_analysis,
 )
+
+
+def _raw_json(**overrides) -> str:
+    """A well-formed five-key model reply with any fields overridden."""
+    payload = {
+        "title": "Person at the door",
+        "description": "Someone is ringing the bell.",
+        "severity": "medium",
+    }
+    payload.update(overrides)
+    return json.dumps(payload)
 
 
 
@@ -67,16 +83,41 @@ def test_clamped_title_normalizes_whitespace():
     assert _clamped_title("  Person   at\nthe door  ") == "Person at the door"
 
 
+def test_clamped_words_caps_word_count():
+    text = "one two three four five six seven eight nine ten eleven twelve"
+    clamped = _clamped_words(text, 5)
+    assert clamped == "one two three four five"
+
+
+def test_clamped_words_normalizes_whitespace():
+    assert _clamped_words("  a   b\nc  ", 3) == "a b c"
 
 
 
-def test_parse_valid_json_returns_all_three_fields():
-    raw = '{"title": "Person at the door", "description": "Someone is ringing the bell.", "severity": "medium"}'
+
+
+def test_parse_valid_json_returns_all_five_fields():
+    raw = '{"title": "Person at the door", "description": "Someone is ringing the bell.", "severity": "medium", "is_unusual": false, "reason": ""}'
     assert _parse_ai_analysis(raw) == {
         "title": "Person at the door",
         "description": "Someone is ringing the bell.",
         "severity": "medium",
+        "is_unusual": False,
+        "reason": "",
     }
+
+
+def test_parse_valid_json_returns_unusual_flag_with_reason():
+    raw = (
+        '{"title": "Person forcing the back window", '
+        '"description": "A person is prying open the back window.", '
+        '"severity": "high", "is_unusual": true, '
+        '"reason": "Prying open a window is threatening."}'
+    )
+    parsed = _parse_ai_analysis(raw)
+    assert parsed["is_unusual"] is True
+    assert isinstance(parsed["is_unusual"], bool)
+    assert parsed["reason"] == "Prying open a window is threatening."
 
 
 @pytest.mark.parametrize("severity", SEVERITY_LEVELS)
@@ -150,3 +191,72 @@ def test_parse_whitespace_only_returns_none():
 
 def test_parse_empty_string_returns_none():
     assert _parse_ai_analysis("") is None
+
+
+
+def test_parse_coerces_truthy_is_unusual():
+    raw = _raw_json(is_unusual=True, reason="Someone is forcing the door.")
+    parsed = _parse_ai_analysis(raw)
+    assert parsed["is_unusual"] is True
+    assert parsed["reason"] == "Someone is forcing the door."
+
+
+@pytest.mark.parametrize("flag", ["true", "True", "YES", "1", 1])
+def test_parse_coerces_drifted_truthy_spellings(flag):
+    """Models drift into string/number spellings of booleans."""
+    raw = _raw_json(is_unusual=flag, reason="Climbing over the fence.")
+    parsed = _parse_ai_analysis(raw)
+    assert parsed["is_unusual"] is True
+    assert parsed["reason"] == "Climbing over the fence."
+
+
+@pytest.mark.parametrize("flag", [False, "false", "False", "no", "0", 0, None])
+def test_parse_coerces_falsy_spellings_and_drops_reason(flag):
+    raw = _raw_json(is_unusual=flag, reason="Ordinary passers-by.")
+    parsed = _parse_ai_analysis(raw)
+    assert parsed["is_unusual"] is False
+    assert parsed["reason"] == ""
+
+
+@pytest.mark.parametrize("flag", ["maybe", 2, 1.5, ["true"], {"flag": True}])
+def test_parse_invalid_is_unusual_defaults_to_false(flag):
+    """An unrecognized answer degrades to "ordinary", never to a false alarm."""
+    raw = _raw_json(is_unusual=flag, reason="Volunteered but dropped.")
+    parsed = _parse_ai_analysis(raw)
+    assert parsed["is_unusual"] is FALLBACK_IS_UNUSUAL == False
+    assert parsed["reason"] == ""
+
+
+def test_parse_missing_is_unusual_defaults_to_false():
+    raw = '{"title": "T", "description": "D.", "severity": "low"}'
+    parsed = _parse_ai_analysis(raw)
+    assert parsed["is_unusual"] == FALLBACK_IS_UNUSUAL == False
+    assert parsed["reason"] == ""
+
+
+def test_parse_reason_is_clamped_when_unusual():
+    reason = " ".join(f"word{i}" for i in range(30))
+    raw = _raw_json(is_unusual=True, reason=reason)
+    parsed = _parse_ai_analysis(raw)
+    assert len(parsed["reason"].split()) == MAX_UNUSUAL_REASON_WORDS
+
+
+def test_parse_non_string_reason_is_dropped():
+    raw = _raw_json(is_unusual=True, reason=42)
+    parsed = _parse_ai_analysis(raw)
+    assert parsed["is_unusual"] is True
+    assert parsed["reason"] == ""
+
+
+def test_parse_plain_text_fallback_has_no_unusual_signal():
+    raw = "A person is walking across the backyard carrying a ladder towards the shed."
+    parsed = _parse_ai_analysis(raw)
+    assert parsed["is_unusual"] is False
+    assert parsed["reason"] == ""
+
+
+def test_parse_truncated_json_fallback_has_no_unusual_signal():
+    raw = '{"title": "Person at door", "is_unusual": true, "reason": "Forcing the door'
+    parsed = _parse_ai_analysis(raw)
+    assert parsed["is_unusual"] is False
+    assert parsed["reason"] == ""
