@@ -36,8 +36,10 @@ SEVERITY_LEVELS = ("low", "medium", "high")
 
 FALLBACK_SEVERITY = "medium"
 MAX_TITLE_WORDS = 10
+FALLBACK_IS_UNUSUAL = False
+MAX_UNUSUAL_REASON_WORDS = 20
 
-ANALYSIS_MAX_TOKENS = 300
+ANALYSIS_MAX_TOKENS = 350  # headroom for the extra is_unusual/reason keys
 
 ANALYSIS_SYSTEM_PROMPT = (
     'You are the vision-analysis component of Bina, a home security camera '
@@ -48,12 +50,30 @@ ANALYSIS_SYSTEM_PROMPT = (
     'sentences\n'
     '- "severity": how concerning the scene is, one of "low", "medium" or '
     '"high"\n'
+    '- "is_unusual": true if this event looks unusual or noteworthy for a '
+    'home security camera, otherwise false\n'
+    '- "reason": when is_unusual is true, one short sentence (at most 20 '
+    'words) saying what makes the event unusual; an empty string otherwise\n'
     'Use "low" for an empty or calm scene, "medium" for a person or animal '
     'doing something ordinary near the property, and "high" for suspicious '
     'or threatening behaviour such as someone forcing a door or window.\n'
-    'Example: {"title": "Person at the front door", "description": "A person '
-    'is standing at the front door, facing the entrance.", "severity": '
-    '"medium"}'
+    'Ordinary everyday detections are NOT unusual: a person walking past, '
+    'delivering a package, checking the mail, walking a dog, or an animal '
+    'wandering around must have is_unusual false. Set is_unusual true only '
+    'for out-of-the-ordinary or potentially threatening behaviour such as '
+    'someone forcing a door or window, climbing a fence, hiding, holding a '
+    'tool near the property, lingering while peeking into windows, or '
+    'visible damage to the property; when in doubt, answer false. '
+    'is_unusual is a heuristic signal for the notification layer, not a '
+    'definitive security verdict.\n'
+    'Examples:\n'
+    '{"title": "Person at the front door", "description": "A person is '
+    'standing at the front door, facing the entrance.", "severity": '
+    '"medium", "is_unusual": false, "reason": ""}\n'
+    '{"title": "Person forcing the back window", "description": "A person is '
+    'prying open the back window with a tool.", "severity": "high", '
+    '"is_unusual": true, "reason": "Someone is prying open a window with a '
+    'tool, which is threatening behaviour."}'
 )
 
 logging.basicConfig(
@@ -230,20 +250,51 @@ def _extract_json_object(text: str) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _clamped_words(text: str, max_words: int) -> str:
+    """
+    Whitespace-normalize free-form model text and clamp it to max_words, so
+    the notification UI never receives an over-long field even when the
+    model ignores the word-limit instruction.
+    """
+    words = " ".join(text.split()).split()
+    return " ".join(words[:max_words])
+
+
 def _clamped_title(title: str, max_words: int = MAX_TITLE_WORDS) -> str:
     """
-    Whitespace-normalize a title and clamp it to MAX_TITLE_WORDS, so the
-    notification UI never receives an over-long headline even when the
-    model ignores the "at most 10 words" instruction.
+    Clamp a title to MAX_TITLE_WORDS (see _clamped_words).
     """
-    words = " ".join(title.split()).split()
-    return " ".join(words[:max_words])
+    return _clamped_words(title, max_words)
+
+
+TRUTHY_IS_UNUSUAL = {"true", "yes", "1", "y", "on"}
+
+
+def _coerced_unusual(value: object) -> bool:
+    """
+    Normalize the model's is_unusual answer to a real boolean (BIN-010).
+
+    Models drift into string/number spellings of booleans ("true", "Yes",
+    1), so those are accepted; anything unrecognized — including a missing
+    key — counts as False, so a malformed answer degrades to "ordinary
+    event" instead of raising a false alarm. The flag stays an AI-generated
+    heuristic signal, never a definitive security determination.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in TRUTHY_IS_UNUSUAL
+    if isinstance(value, int):
+        return value == 1
+    return False
 
 
 def _parse_ai_analysis(raw: str) -> dict | None:
     """
-    Parse the model response into the structured event fields (BIN-009):
-    {"title": str, "description": str, "severity": "low"|"medium"|"high"}.
+    Parse the model response into the structured event fields (BIN-009,
+    BIN-010):
+    {"title": str, "description": str, "severity": "low"|"medium"|"high",
+     "is_unusual": bool, "reason": str}.
 
     Returns None only when the raw output contains no usable description
     at all — the endpoint then reports a provider failure (502) instead of
@@ -253,10 +304,14 @@ def _parse_ai_analysis(raw: str) -> dict | None:
     - Valid JSON object: fields are used directly. An unknown, missing or
       non-string severity becomes FALLBACK_SEVERITY; a missing or empty
       title is derived from the description; the title is clamped to
-      MAX_TITLE_WORDS either way.
+      MAX_TITLE_WORDS either way. is_unusual is coerced to a boolean
+      (missing or invalid -> FALLBACK_IS_UNUSUAL, i.e. False); a reason is
+      kept — clamped to MAX_UNUSUAL_REASON_WORDS — only when is_unusual is
+      true, otherwise it is dropped to "" so the schema stays predictable.
     - Non-JSON output (old free-text behaviour, truncated JSON, chatty
       prose): the whole text becomes the description, the title is
-      derived from its first words and the severity stays FALLBACK_SEVERITY.
+      derived from its first words, the severity stays FALLBACK_SEVERITY
+      and the AI signal defaults to is_unusual=False with no reason.
     """
     raw = (raw or "").strip()
     if not raw:
@@ -265,6 +320,8 @@ def _parse_ai_analysis(raw: str) -> dict | None:
     description = raw
     severity = FALLBACK_SEVERITY
     title: str | None = None
+    is_unusual = FALLBACK_IS_UNUSUAL
+    reason = ""
 
     parsed = _extract_json_object(raw)
     if parsed is not None:
@@ -282,6 +339,11 @@ def _parse_ai_analysis(raw: str) -> dict | None:
             if candidate in SEVERITY_LEVELS:
                 severity = candidate
 
+        is_unusual = _coerced_unusual(parsed.get("is_unusual"))
+        json_reason = parsed.get("reason")
+        if is_unusual and isinstance(json_reason, str) and json_reason.strip():
+            reason = _clamped_words(json_reason.strip(), MAX_UNUSUAL_REASON_WORDS)
+
     if title is None:
 
         title = description.rstrip()
@@ -292,6 +354,8 @@ def _parse_ai_analysis(raw: str) -> dict | None:
         "title": _clamped_title(title),
         "description": description,
         "severity": severity,
+        "is_unusual": is_unusual,
+        "reason": reason,
     }
 
 
@@ -305,10 +369,14 @@ async def analyze(
     is an architectural decision) and optionally the class detected by the
     C++ pipeline, and returns a structured analysis:
 
-        {"title": str, "description": str, "severity": "low"|"medium"|"high"}
+        {"title": str, "description": str, "severity": "low"|"medium"|"high",
+         "is_unusual": bool, "reason": str}
 
     If the model's output is not valid JSON, the plain text becomes the
-    description and title/severity are derived/defaulted (BIN-009 fallback).
+    description and title/severity are derived/defaulted (BIN-009 fallback);
+    the AI unusual-event signal then defaults to is_unusual=False (BIN-010).
+    is_unusual is an AI-generated heuristic signal, not a definitive
+    security determination.
     """
     data = await image.read(MAX_IMAGE_BYTES + 1)
     if not data:
